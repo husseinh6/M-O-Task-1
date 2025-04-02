@@ -1,0 +1,1003 @@
+---
+title: "M&0 Assignment Task 1"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+1 + 1
+```
+
+You can add options to executable code like this
+
+```{r}
+#| echo: false
+2 * 2
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).
+
+
+
+
+```{r}
+# Load necessary libraries
+library(kernlab)
+library(caret)
+library(dplyr)
+```
+
+```{r}
+#Get the directory of our file
+getwd()
+```
+
+# Preprocess
+
+We first load the data by putting the file on the same directory as this file
+
+```{r}
+# Load the dataset
+student_data <- read.csv("student-mat.csv", sep = ";")
+
+```
+
+Given that many columns are categorical, e,g, sex, famsize, Pstatus, etc... we change them to cateogrical numbers. And we then define X, the variables we will use to predict our target variable, y which is G3 (Our target variable).
+
+```{r}
+# Check for missing values
+sum(is.na(student_data))
+student_data <-  na.omit(student_data)
+
+# Encode categorical variables using one-hot encoding
+student_data_encoded <- model.matrix(~ . - 1, data = student_data)
+
+# Define target variable (G3 for regression)
+X <- student_data_encoded[, !colnames(student_data_encoded) %in% c("G3")]
+y <- student_data_encoded[, "G3"]
+```
+ 
+ 
+ 
+```{r}
+# Normalize numerical features
+X <- scale(X)
+```
+ 
+
+
+```{r}
+# Load caret package
+library(caret)
+
+# Split data into training and testing sets
+set.seed(123)
+trainIndex <- createDataPartition(y, p = 0.8, list = FALSE)
+trainData <- X[trainIndex, ]
+testData <- X[-trainIndex, ]
+trainTarget <- y[trainIndex]
+testTarget <- y[-trainIndex]
+
+```
+
+
+We now calculate the correlation between variables and then define the variable features that we will use in our regression model. 
+
+```{r}
+# Load necessary libraries
+library(caret)
+library(dplyr)
+
+# Calculate correlation between features and target variable
+correlation_matrix <- cor(student_data_encoded)
+correlation_with_target <- correlation_matrix[, "G3"]
+
+# Select features with high correlation (e.g., absolute correlation > 0.1)
+selected_features <- names(correlation_with_target[abs(correlation_with_target) > 0.1])
+selected_features_g3 <- setdiff(selected_features, "G3")
+selected_features
+
+# Filter the dataset to include only selected features
+X_selected <- X[, selected_features_g3]
+```
+
+So now that we have the selected features, let's look how each one behaves with G3.
+
+
+```{r}
+
+library(ggplot2)
+library(dplyr)
+
+new_data <- student_data_encoded
+new_data <- as.data.frame(student_data_encoded)
+
+# Get the list of variables excluding "G3"
+other_vars <- setdiff(colnames(new_data), "G3")
+
+# Loop through each variable and create individual scatterplots with correlation
+for (var in other_vars) {
+  # Calculate correlation coefficient
+  cor_value <- cor(new_data[[var]], new_data$G3, use = "complete.obs")
+  
+  # Create plot
+  p <- ggplot(new_data, aes_string(x = var, y = "G3")) +
+    geom_point(alpha = 0.6, color = "blue") +  # Scatterplot
+    geom_smooth(method = "lm", se = FALSE, color = "red") +  # Regression line
+    ggtitle(paste("G3 vs", var, "- Correlation:", round(cor_value, 2))) +  # Title with correlation
+    theme_minimal()
+  
+  print(p)  # Print each plot separately
+}
+
+
+
+```
+
+Since many of these are categorical, there isn't much of a correlation. However, we can see that the two variables with the strongest correlation with G3 are G1 and G2.Next we proceed with training the models:
+
+# Training models
+
+## GPR
+
+```{r}
+library(kernlab)
+# Train Gaussian Process Regression (GPR) model
+#gprModel <- gausspr(X_selected[trainIndex, ], trainTarget, kernel = "rbfdot")
+gprModel_1 <- gausspr(trainTarget ~ ., data = as.data.frame(X_selected[trainIndex, ]))
+
+# Print model summary
+summary(gprModel_1)
+```
+
+Now that the model is trained, we test it against the testing data
+
+```{r}
+# Predict on test data
+#gprPredictions <- predict(gprModel, X_selected[-trainIndex, ])
+gprPredictions <- predict(gprModel_1, X_selected[-trainIndex, ])
+
+# Calculate evaluation metrics
+mse <- mean((testTarget - gprPredictions)^2)
+rsquared <- cor(testTarget, gprPredictions)^2
+
+# Print evaluation metrics
+cat("Mean Squared Error (MSE):", mse, "\n")
+cat("R-squared (R²):", rsquared, "\n")
+```
+
+## Linear regression
+
+```{r}
+# Train Linear Regression model
+lmModel <- lm(trainTarget ~ ., data = as.data.frame(X_selected[trainIndex, ]))
+
+# Print model summary
+summary(lmModel)
+```
+
+We can see that only G1 and G2 are much of significance when it comes to predicting our target variable. Next is evaluation
+
+```{r}
+# Predict on test data
+lmPredictions <- predict(lmModel, newdata = as.data.frame(X_selected[-trainIndex, ]))
+
+# Calculate evaluation metrics
+mse_lm <- mean((testTarget - lmPredictions)^2)
+rmse_lm <- sqrt(mse_lm)
+rsquared_lm <- cor(testTarget, lmPredictions)^2
+
+# Print evaluation metrics
+cat("Linear Regression Metrics:\n")
+cat("Mean Squared Error (MSE):", mse_lm, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse_lm, "\n")
+cat("R-squared (R²):", rsquared_lm, "\n")
+```
+
+
+## Lasso regression 
+
+```{r}
+# Load necessary library
+library(glmnet)
+
+# Prepare data for glmnet
+X_train <- as.matrix(X_selected[trainIndex, ])
+X_test <- as.matrix(X_selected[-trainIndex, ])
+y_train <- trainTarget
+
+# Train Lasso Regression model
+lassoModel <- cv.glmnet(X_train, y_train, alpha = 1)  # alpha = 1 for Lasso
+
+# Print best lambda value
+cat("Best Lambda for Lasso:", lassoModel$lambda.min, "\n")
+```
+
+
+
+```{r}
+# Predict on test data
+lassoPredictions <- predict(lassoModel, s = lassoModel$lambda.min, newx = X_test)
+
+# Calculate evaluation metrics
+mse_lasso <- mean((testTarget - lassoPredictions)^2)
+rmse_lasso <- sqrt(mse_lasso)
+rsquared_lasso <- cor(testTarget, lassoPredictions)^2
+
+# Print evaluation metrics
+cat("Lasso Regression Metrics:\n")
+cat("Mean Squared Error (MSE):", mse_lasso, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse_lasso, "\n")
+cat("R-squared (R²):", rsquared_lasso, "\n")
+```
+
+## Ridge regression
+
+```{r}
+# Train Ridge Regression model
+ridgeModel <- cv.glmnet(X_train, y_train, alpha = 0)  # alpha = 0 for Ridge
+
+# Print best lambda value
+cat("Best Lambda for Ridge:", ridgeModel$lambda.min, "\n")
+
+# Predict on test data
+ridgePredictions <- predict(ridgeModel, s = ridgeModel$lambda.min, newx = X_test)
+
+# Calculate evaluation metrics
+mse_ridge <- mean((testTarget - ridgePredictions)^2)
+rmse_ridge <- sqrt(mse_ridge)
+rsquared_ridge <- cor(testTarget, ridgePredictions)^2
+
+# Print evaluation metrics
+cat("Ridge Regression Metrics:\n")
+cat("Mean Squared Error (MSE):", mse_ridge, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse_ridge, "\n")
+cat("R-squared (R²):", rsquared_ridge, "\n")
+```
+## GPR improvements
+
+Now we try ways to improve the guassian process model. First is changing the kernel
+
+```{r}
+# Try Matern Kernel
+gprModel_tanhdot <- gausspr(X_selected[trainIndex, ], trainTarget, kernel = "tanhdot")
+
+# Try Polynomial Kernel
+gprModel_poly <- gausspr(X_selected[trainIndex, ], trainTarget, kernel = "polydot")
+
+# Evaluate the models
+gprPredictions_tanhdot <- predict(gprModel_tanhdot, X_selected[-trainIndex, ])
+gprPredictions_poly <- predict(gprModel_poly, X_selected[-trainIndex, ])
+
+mse_tanhdot <- mean((testTarget - gprPredictions_tanhdot)^2)
+mse_poly <- mean((testTarget - gprPredictions_poly)^2)
+
+rsquared_gprpoly <- cor(testTarget, gprPredictions_poly)^2
+
+cat("MSE (tanhdot Kernel):", mse_tanhdot, "\n")
+cat("MSE (Polynomial Kernel):", mse_poly, "\n")
+cat("R-squared (R²):", rsquared_gprpoly, "\n")
+```
+
+Now it became 2nd best model (polynomial). So we will be using that model from now on.  
+
+```{r}
+gprModel <- gausspr(X_selected[trainIndex, ], trainTarget, kernel = "polydot")
+```
+
+
+One area GPR outperforms other linear models is small subsets because linear models tend to overfit. So let's try to see their performances on a small subset of the data. 
+
+```{r}
+# Use a small subset of the data
+library(glmnet)
+set.seed(123)
+small_index <- sample(1:nrow(X_selected), 50)  # Use 50 samples
+X_small <- X_selected[small_index, ]
+y_small <- y[small_index]
+
+#gpr
+gpr_small_model <- gausspr(X_small, y_small, kernel = "polydot")
+gprPredictions_small_gpr <- predict(gpr_small_model, X_selected[-trainIndex, ])
+mse_gpr_small <- mean((testTarget - gprPredictions_small_gpr)^2)
+rsquared_gprsmall <- cor(testTarget, gprPredictions_small_gpr)^2
+
+#ridge
+X_train <- as.matrix(X_small)
+X_test <- as.matrix(X_selected[-trainIndex, ])
+y_train <- trainTarget
+ridgeModel_small <- cv.glmnet(X_train, y_small, alpha = 0)
+ridgePredictions_small <- predict(ridgeModel_small, s = ridgeModel_small$lambda.min, newx = X_test)
+mse_ridge_small <- mean((testTarget - ridgePredictions_small)^2)
+rsquared_ridge_small <- cor(testTarget, ridgePredictions_small)^2
+
+#Lasso
+lassoModel_small <- cv.glmnet(X_train, y_small, alpha = 1)
+lassoPredictions_small <- predict(lassoModel_small, s = lassoModel_small$lambda.min, newx = X_test)
+mse_lasso_small <- mean((testTarget - lassoPredictions_small)^2)
+rsquared_lasso_small <- cor(testTarget, lassoPredictions_small)^2
+
+#Linear
+lmModel_small <- lm(y_small ~ ., data = as.data.frame(X_small))
+lmPredictions_small <- predict(lmModel_small, newdata = as.data.frame(X_selected[-trainIndex, ]))
+mse_lm_small <- mean((testTarget - lmPredictions_small)^2)
+rsquared_lm_small <- cor(testTarget, lmPredictions_small)^2
+
+mse_gpr_small
+mse_ridge_small
+mse_lasso_small
+mse_lm_small
+
+rsquared_gprsmall
+rsquared_ridge_small
+rsquared_lasso_small
+rsquared_lm_small
+
+
+# Train and compare models on the small dataset
+# (Include Linear Regression, Lasso, Ridge, and GPR)
+```
+
+
+Lasso regression seem to be doing the best. This didn't back up our inital hypothesis. Next let's see the how the GPR model captures the non-linear relationship that other linear models can't. 
+
+
+```{r}
+# Visualize non-linear relationships with GPR with each feature
+feature <- "sexM"
+feature_index <- which(colnames(X_selected) == feature)
+
+# Create a grid of values for the selected feature
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+
+# Predict using GPR
+grid_predictions <- predict(gprModel, grid_data)
+
+X_selected_test <- X_selected[-trainIndex,]
+
+# Plot the relationship
+plot(grid_values, grid_predictions, type = "l", col = "blue", lwd = 2,
+     xlab = feature, ylab = "Predicted G3", main = "Non-Linear Relationship Captured by GPR")
+
+# Add points to the plot
+points(X_selected_test[, feature_index], testTarget, col = "red", pch = 16)
+
+
+
+
+#Age
+feature <- "age"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+X_selected_test <- X_selected[-trainIndex,]
+plot(grid_values, grid_predictions, type = "l", col = "blue", lwd = 2,
+     xlab = feature, ylab = "Predicted G3", main = "Non-Linear Relationship Captured by GPR")
+points(X_selected_test[, feature_index], testTarget, col = "red", pch = 16)
+
+#addressU
+feature <- "addressU"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+X_selected_test <- X_selected[-trainIndex,]
+plot(grid_values, grid_predictions, type = "l", col = "blue", lwd = 2,
+     xlab = feature, ylab = "Predicted G3", main = "Non-Linear Relationship Captured by GPR")
+points(X_selected_test[, feature_index], testTarget, col = "red", pch = 16)
+
+
+#Medu
+feature <- "Medu"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+X_selected_test <- X_selected[-trainIndex,]
+plot(grid_values, grid_predictions, type = "l", col = "blue", lwd = 2,
+     xlab = feature, ylab = "Predicted G3", main = "Non-Linear Relationship Captured by GPR")
+points(X_selected_test[, feature_index], testTarget, col = "red", pch = 16)
+
+#Fedu
+feature <- "Fedu"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+X_selected_test <- X_selected[-trainIndex,]
+plot(grid_values, grid_predictions, type = "l", col = "blue", lwd = 2,
+     xlab = feature, ylab = "Predicted G3", main = "Non-Linear Relationship Captured by GPR")
+points(X_selected_test[, feature_index], testTarget, col = "red", pch = 16)
+
+#Mjobhealth
+feature <- "Mjobhealth"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+X_selected_test <- X_selected[-trainIndex,]
+plot(grid_values, grid_predictions, type = "l", col = "blue", lwd = 2,
+     xlab = feature, ylab = "Predicted G3", main = "Non-Linear Relationship Captured by GPR")
+points(X_selected_test[, feature_index], testTarget, col = "red", pch = 16)
+
+#traveltime
+feature <- "traveltime"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+X_selected_test <- X_selected[-trainIndex,]
+plot(grid_values, grid_predictions, type = "l", col = "blue", lwd = 2,
+     xlab = feature, ylab = "Predicted G3", main = "Non-Linear Relationship Captured by GPR")
+points(X_selected_test[, feature_index], testTarget, col = "red", pch = 16)
+
+#failures
+feature <- "failures"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+X_selected_test <- X_selected[-trainIndex,]
+plot(grid_values, grid_predictions, type = "l", col = "blue", lwd = 2,
+     xlab = feature, ylab = "Predicted G3", main = "Non-Linear Relationship Captured by GPR")
+points(X_selected_test[, feature_index], testTarget, col = "red", pch = 16)
+
+#paidyes
+feature <- "paidyes"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+X_selected_test <- X_selected[-trainIndex,]
+plot(grid_values, grid_predictions, type = "l", col = "blue", lwd = 2,
+     xlab = feature, ylab = "Predicted G3", main = "Non-Linear Relationship Captured by GPR")
+points(X_selected_test[, feature_index], testTarget, col = "red", pch = 16)
+
+#higheryes
+feature <- "higheryes"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+X_selected_test <- X_selected[-trainIndex,]
+plot(grid_values, grid_predictions, type = "l", col = "blue", lwd = 2,
+     xlab = feature, ylab = "Predicted G3", main = "Non-Linear Relationship Captured by GPR")
+points(X_selected_test[, feature_index], testTarget, col = "red", pch = 16)
+
+#romanticyes
+feature <- "romanticyes"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+X_selected_test <- X_selected[-trainIndex,]
+plot(grid_values, grid_predictions, type = "l", col = "blue", lwd = 2,
+     xlab = feature, ylab = "Predicted G3", main = "Non-Linear Relationship Captured by GPR")
+points(X_selected_test[, feature_index], testTarget, col = "red", pch = 16)
+
+#goout
+feature <- "goout"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+X_selected_test <- X_selected[-trainIndex,]
+plot(grid_values, grid_predictions, type = "l", col = "blue", lwd = 2,
+     xlab = feature, ylab = "Predicted G3", main = "Non-Linear Relationship Captured by GPR")
+points(X_selected_test[, feature_index], testTarget, col = "red", pch = 16)
+
+#G1
+feature <- "G1"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+X_selected_test <- X_selected[-trainIndex,]
+plot(grid_values, grid_predictions, type = "l", col = "blue", lwd = 2,
+     xlab = feature, ylab = "Predicted G3", main = "Non-Linear Relationship Captured by GPR")
+points(X_selected_test[, feature_index], testTarget, col = "red", pch = 16)
+
+#G2
+feature <- "G2"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+X_selected_test <- X_selected[-trainIndex,]
+plot(grid_values, grid_predictions, type = "l", col = "blue", lwd = 2,
+     xlab = feature, ylab = "Predicted G3", main = "Non-Linear Relationship Captured by GPR")
+points(X_selected_test[, feature_index], testTarget, col = "red", pch = 16)
+
+```
+
+Earlier we seen that the linear line of best fit wasn't quite correct. Hence GPR captures the non linear relationship much better than the rest of the models. Now we can find the optimal value for each feature that optimises G3.
+
+# Optimal values
+
+```{r}
+
+#sexM
+feature <- "sexM"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+optimal_sexM_gpr <- grid_values[which.max(grid_predictions)]
+cat("Optimal sexM:", optimal_sexM_gpr, "\n")
+
+#age
+feature <- "age"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+optimal_age_gpr <- grid_values[which.max(grid_predictions)]
+cat("Optimal Age:", optimal_age_gpr, "\n")
+
+
+#addressU
+feature <- "addressU"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+optimal_addressU_gpr <- grid_values[which.max(grid_predictions)]
+cat("Optimal addressU:", optimal_addressU_gpr, "\n")
+
+#Medu
+feature <- "Medu"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+optimal_Medu_gpr <- grid_values[which.max(grid_predictions)]
+cat("Optimal Medu:", optimal_Medu_gpr, "\n")
+
+#Fedu
+feature <- "Fedu"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+optimal_Fedu_gpr <- grid_values[which.max(grid_predictions)]
+cat("Optimal Fedu:", optimal_Fedu_gpr, "\n")
+
+#Mjobhealth
+feature <- "Mjobhealth"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+optimal_Mjobhealth_gpr <- grid_values[which.max(grid_predictions)]
+cat("Optimal Mjobhealth:", optimal_Mjobhealth_gpr, "\n")
+
+#traveltime
+feature <- "traveltime"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+optimal_traveltime_gpr <- grid_values[which.max(grid_predictions)]
+cat("Optimal travel time:", optimal_traveltime_gpr, "\n")
+
+#failures
+feature <- "failures"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+optimal_failures_gpr <- grid_values[which.max(grid_predictions)]
+cat("Optimal failures:", optimal_failures_gpr, "\n")
+
+#paidyes
+feature <- "paidyes"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+optimal_paidyes_gpr <- grid_values[which.max(grid_predictions)]
+cat("Optimal paidyes:", optimal_paidyes_gpr, "\n")
+
+#higheryes
+feature <- "higheryes"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+optimal_higheryes_gpr <- grid_values[which.max(grid_predictions)]
+cat("Optimal higheryes:", optimal_higheryes_gpr, "\n")
+
+#romanticyes
+feature <- "romanticyes"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+optimal_romanticyes_gpr <- grid_values[which.max(grid_predictions)]
+cat("Optimal romanticyes:", optimal_romanticyes_gpr, "\n")
+
+#goout
+feature <- "goout"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+optimal_goout_gpr <- grid_values[which.max(grid_predictions)]
+cat("Optimal goout:", optimal_goout_gpr, "\n")
+
+#G1
+feature <- "G1"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+optimal_G1_gpr <- grid_values[which.max(grid_predictions)]
+cat("Optimal G1:", optimal_G1_gpr, "\n")
+
+#G2
+feature <- "G2"
+feature_index <- which(colnames(X_selected) == feature)
+grid_values <- seq(min(X_selected[, feature_index]), max(X_selected[, feature_index]), length.out = 100)
+grid_data <- X_selected[1:100, ]  # Use the first 100 rows for prediction
+grid_data[, feature_index] <- grid_values
+grid_predictions <- predict(gprModel, grid_data)
+optimal_G2_gpr <- grid_values[which.max(grid_predictions)]
+cat("Optimal G2:", optimal_G2_gpr, "\n")
+
+```
+
+
+While other regression models can find the optimal values for the features, they assume a linear relationship which is not the case hence why GPR outshine them.  In fact let's compare it with other models for optimal values
+
+```{r}
+# Linear mode
+lmModel
+
+# Extract coefficients
+coefficients <- coef(lmModel)
+cat("Linear Regression Coefficients:\n")
+print(coefficients)
+
+# Find the optimal study time
+# Assume the relationship is linear: y = b0 + b1 * studytime
+optimal_sexM_lm <- (max(trainTarget) - coefficients["(Intercept)"]) / coefficients["sexM"]
+cat("Optimal sexM (Linear Regression):", optimal_sexM_lm, "\n") 
+```
+
+All we did is that we rearranged the linear regression equation and obtained this value. The equation we used is 
+
+$$
+optimal sexM= {max(trainTarget) - b_0 \over b_1}
+$$
+The reason we set the y value as max(trainTarget) is because we want to find the value that maximises it. Now we compare the two. 
+
+```{r}
+# set the feature
+feature <- "sexM"
+feature_index <- which(colnames(X_selected) == feature)
+
+# Compare optimal values
+cat("Optimal sexM (Linear Regression):", optimal_sexM_lm, "\n")
+cat("Optimal sexM (GPR):", optimal_sexM_gpr, "\n")
+
+# Check which value is closer to the observed data
+observed_max_sexM <- max(X_selected[, feature_index])
+cat("Maximum Observed sexM:", observed_max_sexM, "\n")
+
+# Calculate differences
+diff_lm <- abs(optimal_sexM_lm - observed_max_sexM)
+diff_gpr <- abs(optimal_sexM_gpr - observed_max_sexM)
+
+cat("Difference (Linear Regression):", diff_lm, "\n")
+cat("Difference (GPR):", diff_gpr, "\n")
+
+# Determine which model is better
+if (diff_gpr < diff_lm) {
+  cat("GPR provides a more realistic optimal value.\n")
+} else {
+  cat("Linear Regression provides a more realistic optimal value.\n")
+}
+```
+As you can see gpr does indeed provide much better optimal value. so now let's check for lasso and ridge regression. We will define a function for the linear relationship. 
+
+```{r}
+# Ridge and Lasso
+lassoModel
+ridgeModel
+
+# Extract coefficients
+lasso_coef <- coef(lassoModel, s = "lambda.min")
+ridge_coef <- coef(ridgeModel, s = "lambda.min")
+
+# Function to find optimal feature value
+find_optimal_value <- function(coefficients, feature_name, max_target) {
+  intercept <- coefficients["(Intercept)", ]
+  feature_coef <- coefficients[feature_name, ]
+  optimal_value <- (max_target - intercept) / feature_coef
+  return(optimal_value)
+}
+
+
+# Find optimal study time using Lasso and Ridge
+max_target <- max(trainTarget)
+feature <- "sexM"
+
+optimal_sexM_lasso <- find_optimal_value(lasso_coef, feature, max_target)
+optimal_sexM_ridge <- find_optimal_value(ridge_coef, feature, max_target)
+
+cat("Optimal sexM (Lasso):", optimal_sexM_lasso, "\n")
+cat("Optimal sexM (Ridge):", optimal_sexM_ridge, "\n")
+```
+
+Now comparing it to the gpr model, we get this 
+
+```{r}
+# Calculate differences
+diff_lasso <- abs(optimal_sexM_lasso - observed_max_sexM)
+diff_ridge <- abs(optimal_sexM_ridge - observed_max_sexM)
+
+cat("Difference (Linear Regression):", diff_lasso, "\n")
+cat("Difference (GPR):", diff_ridge, "\n")
+cat("Difference (GPR):", diff_gpr, "\n")
+```
+
+As you can see gpr model does much better job again. 
+
+We will do the same for all values. 
+
+```{r}
+# Extract coefficients
+lasso_coef <- as.matrix(coef(lassoModel, s = "lambda.min"))
+ridge_coef <- as.matrix(coef(ridgeModel, s = "lambda.min"))
+lm_coef <- coef(lmModel)  # This is a named vector
+
+# Define a function to find optimal feature values
+find_optimal_value <- function(coefficients, feature_name, max_target) {
+  if (is.matrix(coefficients)) {
+    intercept <- coefficients["(Intercept)", ]
+    feature_coef <- coefficients[feature_name, ]
+  } else {
+    intercept <- coefficients["(Intercept)"]
+    feature_coef <- coefficients[feature_name]
+  }
+  optimal_value <- (max_target - intercept) / feature_coef
+  return(optimal_value)
+}
+
+# List of features
+features <- colnames(X_selected)
+
+# Maximum target value
+max_target <- max(trainTarget)
+
+# Initialize vectors to store optimal values
+optimal_lasso <- numeric(length(features))
+optimal_ridge <- numeric(length(features))
+optimal_lm <- numeric(length(features))
+
+# Loop through each feature
+for (i in seq_along(features)) {
+  feature <- features[i]
+  
+  # Calculate optimal value for Lasso
+  optimal_lasso[i] <- find_optimal_value(lasso_coef, feature, max_target)
+  
+  # Calculate optimal value for Ridge
+  optimal_ridge[i] <- find_optimal_value(ridge_coef, feature, max_target)
+  
+  # Calculate optimal value for Linear Regression
+  optimal_lm[i] <- find_optimal_value(lm_coef, feature, max_target)
+}
+
+# Create a data frame to store the results
+optimal_values <- data.frame(
+  Feature = features,
+  Optimal_Lasso = optimal_lasso,
+  Optimal_Ridge = optimal_ridge,
+  Optimal_Linear = optimal_lm
+)
+
+# Print the results
+print(optimal_values)
+```
+
+Now we will add columns of gpr optimal values. But first we need to combine all the variables we identified earlier for gpr into one. 
+
+```{r}
+# Combine GPR optimal values into a vector
+optimal_gpr <- c(
+  sexM = optimal_sexM_gpr,
+  age = optimal_age_gpr,
+  addressU = optimal_addressU_gpr,
+  Medu = optimal_Medu_gpr,
+  Fedu = optimal_Fedu_gpr,
+  Mjobhealth = optimal_Mjobhealth_gpr,
+  traveltime = optimal_traveltime_gpr,
+  failures = optimal_failures_gpr,
+  paidyes = optimal_paidyes_gpr,
+  higheryes = optimal_higheryes_gpr,
+  romanticyes = optimal_romanticyes_gpr,
+  goout = optimal_goout_gpr,
+  G1 = optimal_G1_gpr,
+  G2 = optimal_G2_gpr
+)
+
+# Print the combined GPR optimal values
+print(optimal_gpr)
+```
+
+
+```{r}
+# Add GPR optimal values to the data frame
+optimal_values$Optimal_GPR <- optimal_gpr
+
+# Calculate maximum observed values for each feature
+max_observed_values <- apply(X_selected, 2, max)
+
+# Add maximum observed values to the data frame
+optimal_values$Max_Observed <- max_observed_values
+
+# Calculate the absolute difference between each model's optimal value and the maximum observed value
+optimal_values$Diff_Lasso <- abs(optimal_values$Optimal_Lasso - optimal_values$Max_Observed)
+optimal_values$Diff_Ridge <- abs(optimal_values$Optimal_Ridge - optimal_values$Max_Observed)
+optimal_values$Diff_Linear <- abs(optimal_values$Optimal_Linear - optimal_values$Max_Observed)
+optimal_values$Diff_GPR <- abs(optimal_values$Optimal_GPR - optimal_values$Max_Observed)
+
+# Determine which model has the lowest difference for each feature
+optimal_values$Best_Model <- colnames(optimal_values[, c("Diff_Lasso", "Diff_Ridge", "Diff_Linear", "Diff_GPR")])[
+  apply(optimal_values[, c("Diff_Lasso", "Diff_Ridge", "Diff_Linear", "Diff_GPR")], 1, which.min)
+]
+
+# Print the updated data frame
+print(optimal_values)
+```
+
+As we can see, across all features, the gpr model was best. Here is a visual for it. We will get rid of the lasso difference because it seems to be predicting for infinite for most features. 
+
+```{r}
+# Load ggplot2 for visualization
+library(ggplot2)
+library(tidyr)
+
+# Convert the data frame to long format for plotting
+optimal_values_long <- pivot_longer(optimal_values, cols = starts_with("Diff"), names_to = "Model", values_to = "Difference")
+
+# Plot the differences
+ggplot(optimal_values_long, aes(x = Feature, y = Difference, fill = Model)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Difference Between Optimal Values and Maximum Observed Values",
+       x = "Feature", y = "Difference") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+Here is the same graph but excluding lasso difference, because it seems to be prediciting infinity for most values. 
+
+```{r}
+# Load ggplot2 for visualization
+library(ggplot2)
+library(tidyr)
+
+# Convert the data frame to long format for plotting
+optimal_values_long <- pivot_longer(optimal_values, cols = c("Diff_Ridge", "Diff_Linear", "Diff_GPR"), names_to = "Model", values_to = "Difference")
+
+# Plot the differences
+ggplot(optimal_values_long, aes(x = Feature, y = Difference, fill = Model)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Difference Between Optimal Values and Maximum Observed Values (Excluding Lasso)",
+       x = "Feature", y = "Difference") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+# At-Risk students
+
+This is another concept that GPR excxels at compared to other models because it uses uncertainity. Now let's assume a student who is predicted less than grade 10 is at risk. 
+
+```{r}
+library(GauPro)
+
+threshold <- 10
+
+# Train GPR model with GauPro
+gprModel_gaupro <- GauPro(X_selected[trainIndex, ], trainTarget)
+
+# Predict with GPR and uncertainty
+gprPredictions_gaupro <- predict(gprModel_gaupro, X_selected, se.fit = TRUE)
+
+# Extract mean predictions and standard deviations
+mean_predictions <- gprPredictions_gaupro$mean
+std_predictions <- gprPredictions_gaupro$se
+
+# Identify at-risk students (e.g., predicted grade < threshold with high uncertainty)
+at_risk_students_gpr <- which(mean_predictions < threshold & std_predictions > 1)
+cat("At-Risk Students (GPR):", at_risk_students_gpr, "\n")
+```
+
+
+
+```{r}
+# Identify at-risk students for lm
+at_risk_students_lm <- which(lmPredictions < threshold)
+cat("At-Risk Students (Linear Regression):", at_risk_students_lm, "\n")
+
+# Identify at-risk students for lasso
+at_risk_students_lasso <- which(lassoPredictions < threshold)
+cat("At-Risk Students (Lasso):", at_risk_students_lasso, "\n")
+
+# Identify at-risk students for ridge
+at_risk_students_ridge <- which(ridgePredictions < threshold)
+cat("At-Risk Students (Ridge):", at_risk_students_ridge, "\n")
+```
+
+
+```{r}
+# Create a data frame to compare results
+at_risk_comparison <- data.frame(
+  Model = c("GPR", "Linear Regression", "Lasso", "Ridge"),
+  At_Risk_Count = c(
+    length(at_risk_students_gpr),
+    length(at_risk_students_lm),
+    length(at_risk_students_lasso),
+    length(at_risk_students_ridge)
+  )
+)
+
+# Print the comparison
+print(at_risk_comparison)
+```
+
+This implies that GPR model identified less students but with higher confidence that they are at risk, whereas the other models don't have any confidence. 
+
+```{r}
+# Load ggplot2 for visualization
+library(ggplot2)
+
+# Plot the comparison
+ggplot(at_risk_comparison, aes(x = Model, y = At_Risk_Count, fill = Model)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Number of At-Risk Students Identified by Each Model",
+       x = "Model", y = "Number of At-Risk Students") +
+  theme_minimal()
+```
+
+
